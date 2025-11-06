@@ -1,28 +1,38 @@
 # crear_informe.py
 # ===============================
-# Script principal: procesa chats, audios, transcribe, clasifica y genera el informe
+# Procesa chats de WhatsApp: textos, audios e imágenes
+# - Limpia automáticamente los .txt antes de procesarlos
+# - Transcribe audios .opus
+# - Extrae texto de imágenes
+# - Clasifica cada soporte
+# - Evita duplicados (±10 min)
+# - Omite todos los mensajes enviados por "Soporte Donucol"
 # ===============================
 
 import os
 import re
+import sys
 import pandas as pd
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Importar módulos auxiliares
 from transcribir import transcribir_audio
 from clasificar import clasificar_soporte, tipos_soporte
 from generar_excel import generar_excel
+from procesar_imagenes import extraer_texto_imagen, analizar_visualmente
+from limpiar_archivo_whatsapp import limpiar_archivo  #  integración automática del limpiador
 
 # -------------------------------
-# Configuración de rutas y formatos
+# Configuración
 # -------------------------------
-RUTA_CHATS = "../chats_soporte"
-RUTA_AUDIOS = "../chats_soporte"   # donde están tus PTT-*.opus
+RUTA_CHATS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "chats_soporte"))
+RUTA_AUDIOS = RUTA_CHATS
+RUTA_IMAGENES = RUTA_CHATS
 RUTA_TRANSCRIPCIONES = Path("transcripciones")
 RUTA_TRANSCRIPCIONES.mkdir(exist_ok=True)
 
-# Traducción de meses inglés → español
+# Mapeo de meses al español
 meses_map = {
     "January": "Enero", "February": "Febrero", "March": "Marzo",
     "April": "Abril", "May": "Mayo", "June": "Junio",
@@ -30,74 +40,76 @@ meses_map = {
     "October": "Octubre", "November": "Noviembre", "December": "Diciembre"
 }
 
-# Regex para audios PTT-YYYYMMDD-WA####.opus
+# Expresiones regulares
 regex_audio = re.compile(r"PTT-(\d{8})-WA\d+\.opus", re.IGNORECASE)
-
-# Lista de resultados finales
-resultados = []
+regex_imagen = re.compile(r"IMG-(\d{8})-WA\d+\.(jpg|png|jpeg)", re.IGNORECASE)
 
 # -------------------------------
-# Procesar todos los audios encontrados
+# Control de duplicados
 # -------------------------------
-for archivo in os.listdir(RUTA_AUDIOS):
-    match = regex_audio.match(archivo)
-    if not match:
-        continue
+ultimo_registro = {}
 
-    fecha_str = match.group(1)  # ejemplo "20250904"
-    fecha = datetime.strptime(fecha_str, "%Y%m%d").date()
+def registrar_soporte(resultados, soporte, fecha_completa, fecha, meses_map):
+    """Evita registrar el mismo tipo de soporte dentro de los 10 minutos siguientes."""
+    global ultimo_registro
+    tipo = soporte
+    tiempo_ultimo = ultimo_registro.get(tipo)
 
-    # Solo tomar audios de 2025 en adelante
-    if fecha.year < 2025:
-        continue
+    if tiempo_ultimo and abs((fecha_completa - tiempo_ultimo).total_seconds()) < 600:
+        return False  # duplicado reciente, ignorar
 
-    ruta_audio = os.path.join(RUTA_AUDIOS, archivo)
-    print(f"[DEBUG] Procesando audio: {archivo} ({fecha})")
-
-    # -------------------------------
-    # Transcripción
-    # -------------------------------
-    transcripcion = transcribir_audio(ruta_audio)
-
-    # Guardar transcripción en carpeta
-    archivo_txt = RUTA_TRANSCRIPCIONES / f"{Path(archivo).stem}.txt"
-    with open(archivo_txt, "w", encoding="utf-8") as f:
-        f.write(transcripcion)
-
-    print(f"[DEBUG] Transcripción guardada en {archivo_txt}")
-
-    # -------------------------------
-    # Clasificación
-    # -------------------------------
-    soporte = clasificar_soporte(transcripcion)
-    if soporte is None:
-        soporte = "Adjunto (pendiente clasificar)"
-
-    # Guardar resultado
+    ultimo_registro[tipo] = fecha_completa
     resultados.append({
         "Fecha": fecha,
         "Mes": meses_map.get(fecha.strftime("%B"), fecha.strftime("%B")),
         "Año": fecha.year,
         "Tipo de Soporte": soporte
     })
+    return True
 
 # -------------------------------
-# Procesar también los chats de texto
+# Detectar archivos a procesar
 # -------------------------------
-for archivo in os.listdir(RUTA_CHATS):
-    if not archivo.endswith(".txt"):
+if len(sys.argv) > 1:
+    arg = sys.argv[1]
+    if os.path.isabs(arg) or os.path.exists(arg):
+        archivos_a_procesar = [arg]
+    else:
+        archivos_a_procesar = [os.path.join(RUTA_CHATS, arg)]
+else:
+    archivos_a_procesar = [
+        os.path.join(RUTA_CHATS, f)
+        for f in os.listdir(RUTA_CHATS)
+        if f.lower().endswith(".txt")
+    ]
+
+if not archivos_a_procesar:
+    print(" No se encontraron archivos .txt en la carpeta de chats.")
+    sys.exit(0)
+
+# -------------------------------
+# Procesar cada chat
+# -------------------------------
+for ruta_txt in archivos_a_procesar:
+    if not os.path.exists(ruta_txt):
+        print(f"[ERROR] No existe el archivo: {ruta_txt}")
         continue
 
-    ruta_txt = os.path.join(RUTA_CHATS, archivo)
-    print(f"\n[DEBUG] Procesando chat: {archivo}")
+    #  LIMPIEZA AUTOMÁTICA
+    ruta_txt_limpio = limpiar_archivo(ruta_txt)
+    if not ruta_txt_limpio:
+        print(f"[ADVERTENCIA] No se pudo limpiar {ruta_txt}, se omite.")
+        continue
+
+    ruta_txt = ruta_txt_limpio  # usar la versión limpia en adelante
+
+    nombre_txt = os.path.basename(ruta_txt)
+    print(f"\n[DEBUG] Iniciando procesamiento del chat limpio: {nombre_txt}")
+    resultados = []
+    ultimo_registro = {}  # reset por chat
 
     with open(ruta_txt, "r", encoding="utf-8") as f:
         for linea in f:
-            # Saltar mensajes de soporte
-            if " - Soporte donucol:" in linea:
-                continue
-
-            # Intentar extraer fecha
             try:
                 fecha = datetime.strptime(linea.split(",")[0], "%d/%m/%Y").date()
             except Exception:
@@ -106,27 +118,69 @@ for archivo in os.listdir(RUTA_CHATS):
             if fecha.year < 2025:
                 continue
 
-            texto = linea.lower()
-            soporte = clasificar_soporte(texto) or "Adjunto (pendiente clasificar)"
+            texto_linea = linea.strip().lower()
 
-            resultados.append({
-                "Fecha": fecha,
-                "Mes": meses_map.get(fecha.strftime("%B"), fecha.strftime("%B")),
-                "Año": fecha.year,
-                "Tipo de Soporte": soporte
-            })
+            # Omitir todo lo enviado por Soporte Donucol
+            if " - Soporte donucol:" in texto_linea:
+                continue
 
-# -------------------------------
-# Depuración antes de generar Excel
-# -------------------------------
-df_debug = pd.DataFrame(resultados)
-print("\nPrimeros 20 registros obtenidos:\n")
-print(df_debug.head(20))
-print("\nConteo por Tipo de Soporte:\n")
-print(df_debug["Tipo de Soporte"].value_counts())
+            # --- Caso 1: Audio ---
+            m_audio = regex_audio.search(linea)
+            if m_audio:
+                nombre_audio = m_audio.group(0)
+                ruta_audio = os.path.join(RUTA_AUDIOS, nombre_audio)
+                if os.path.exists(ruta_audio):
+                    print(f"[DEBUG] Transcribiendo audio: {nombre_audio}")
+                    transcripcion = transcribir_audio(ruta_audio)
+                    archivo_txt_trans = RUTA_TRANSCRIPCIONES / f"{Path(nombre_audio).stem}.txt"
+                    with open(archivo_txt_trans, "w", encoding="utf-8") as ft:
+                        ft.write(transcripcion)
+                    soporte = clasificar_soporte(transcripcion) or "Adjunto (pendiente clasificar)"
+                else:
+                    print(f"[ADVERTENCIA] Audio no encontrado: {nombre_audio}")
+                    soporte = "Adjunto (pendiente clasificar)"
 
-# -------------------------------
-# Generar Excel final
-# -------------------------------
-generar_excel(resultados, tipos_soporte, meses_map)
-print("✅ Informe generado: informe_soportes.xlsx")
+                registrar_soporte(resultados, soporte, datetime.combine(fecha, datetime.min.time()), fecha, meses_map)
+                continue
+
+            # --- Caso 2: Imagen ---
+            m_imagen = regex_imagen.search(linea)
+            if m_imagen:
+                nombre_imagen = m_imagen.group(0)
+                ruta_imagen = os.path.join(RUTA_IMAGENES, nombre_imagen)
+                if os.path.exists(ruta_imagen):
+                    print(f"[DEBUG] Procesando imagen: {nombre_imagen}")
+                    texto_img = extraer_texto_imagen(ruta_imagen)
+                    if texto_img:
+                        soporte = clasificar_soporte(texto_img)
+                        print(f"[OCR] Texto detectado en {nombre_imagen}: {texto_img[:100]}...")
+                    else:
+                        soporte = analizar_visualmente(ruta_imagen)
+                        print(f"[VISUAL] Clasificación visual aplicada.")
+                    soporte = soporte or "Imagen (pendiente clasificar)"
+                else:
+                    print(f"[ADVERTENCIA] Imagen no encontrada: {nombre_imagen}")
+                    soporte = "Imagen no encontrada"
+
+                registrar_soporte(resultados, soporte, datetime.combine(fecha, datetime.min.time()), fecha, meses_map)
+                continue
+
+            # --- Caso 3: Texto (solo cliente) ---
+            soporte = clasificar_soporte(texto_linea) or "Adjunto (pendiente clasificar)"
+            registrar_soporte(resultados, soporte, datetime.combine(fecha, datetime.min.time()), fecha, meses_map)
+
+    # -------------------------------
+    # Resultado final del chat
+    # -------------------------------
+    df_debug = pd.DataFrame(resultados)
+    print("\nPrimeros 10 registros obtenidos:\n")
+    print(df_debug.head(10))
+    print("\nConteo por Tipo de Soporte:\n")
+    print(df_debug["Tipos de Soporte"].value_counts())
+
+    # Generar Excel
+    ruta_generado = generar_excel(resultados, tipos_soporte, meses_map, ruta_txt)
+    if ruta_generado:
+        print(f"[OK] Informe guardado en: {ruta_generado}")
+    else:
+        print("[INFO] No se generó informe (no hubo datos).")
