@@ -1,0 +1,47 @@
+body {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Dropzone con estilo Dunkin */
+/* Dropzone estilo Dunkin más grande y visible */
+.drop-zone {
+    border: 3px dashed #F5821F;
+    background-color: rgba(245, 130, 31, 0.15); 
+    border-radius: 1.2rem;
+    padding: 3.5rem 2rem;
+    text-align: center;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+    cursor: pointer;
+
+    /* Hacer que sea más grande visualmente */
+   display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.5rem;
+}
+
+.drop-zone.dragover {
+    background-color: rgba(245, 130, 31, 0.25);
+    border-color: #d87018;
+}
+
+.mes-card {
+    background: #fff7f1;
+    border: 2px solid #F5821F;
+    border-radius: 0.75rem;
+    padding: 0.8rem;
+    text-align: center;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.2s ease;
+}
+
+.mes-card:hover {
+    background: rgba(245, 130, 31, 0.12);
+}
+
+.mes-card.active {
+    background: #F5821F;
+    color: white;
+    border-color: #d87018;
+}
